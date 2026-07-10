@@ -222,7 +222,7 @@ describe("cross-extension RPC", () => {
       events.on("subagents:rpc:spawn:reply:req-b", reply2);
 
       events.emit("subagents:rpc:spawn", { requestId: "req-a", type: "Explore", prompt: "first" });
-      events.emit("subagents:rpc:spawn", { requestId: "req-b", type: "Plan", prompt: "second" });
+      events.emit("subagents:rpc:spawn", { requestId: "req-b", type: "general-purpose", prompt: "second" });
 
       await vi.waitFor(() => {
         expect(reply1).toHaveBeenCalled();

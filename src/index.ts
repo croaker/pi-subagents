@@ -624,9 +624,9 @@ export default function (pi: ExtensionAPI) {
   function setSchedulingEnabled(b: boolean) { schedulingEnabled = b; }
 
   // ---- Disable default agents configuration ----
-  // When enabled, the three hardcoded default agents (general-purpose, Explore,
-  // Plan) are not registered. User-defined agents from project/global custom
-  // agent dirs are completely unaffected — only DEFAULT_AGENTS are suppressed.
+  // When enabled, the two hardcoded default agents (general-purpose and Explore)
+  // are not registered. User-defined agents from project/global custom agent dirs
+  // are completely unaffected — only DEFAULT_AGENTS are suppressed.
   // Defaults to false; opt-in via `/agents → Settings` or subagents.json.
   // State lives in agent-types.ts (isDefaultsDisabled) because registerAgents
   // needs it; this wrapper just re-registers after flipping it.
@@ -2186,7 +2186,7 @@ ${systemPrompt}
         {
           id: "disableDefaultAgents",
           label: "Disable defaults",
-          description: "Hide built-in agents (general-purpose, Explore, Plan) — custom agents are unaffected",
+          description: "Hide built-in agents (general-purpose and Explore) — custom agents are unaffected",
           currentValue: isDefaultsDisabled() ? "on" : "off",
           values: ["on", "off"],
         },

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_AGENTS } from "../src/default-agents.js";
 import subagentsExtension from "../src/index.js";
 
 const EXAMPLE_TEMPLATE = fileURLToPath(new URL("../examples/agent-tool-description.md", import.meta.url));
@@ -88,8 +89,8 @@ describe("toolDescriptionMode", () => {
     const desc: string = tools.get("Agent").description;
     expect(desc).toContain("## Usage notes");
     expect(desc).toContain("## Writing the prompt");
-    // Full agent descriptions are embedded (a late Explore sentence survives).
-    expect(desc).toContain("very thorough");
+    // Full agent descriptions are embedded rather than truncated to one sentence.
+    expect(desc).toContain(DEFAULT_AGENTS.get("Explore")?.description);
   });
 
   it("compact mode swaps in the short description with one-line type list", () => {
@@ -100,8 +101,8 @@ describe("toolDescriptionMode", () => {
     expect(desc).not.toContain("## Writing the prompt");
     // Type list keeps every agent but only the first sentence of each description.
     expect(desc).toContain("- general-purpose:");
-    expect(desc).toContain("- Explore: Fast read-only search agent for locating code. (Tools:");
-    expect(desc).not.toContain("very thorough");
+    expect(desc).toMatch(/^- Explore: [^\n]+ \(Tools:/m);
+    expect(desc).not.toContain(DEFAULT_AGENTS.get("Explore")?.description);
     // The point of the feature: materially smaller than the full version.
     expect(desc.length).toBeLessThan(1600);
   });
@@ -151,7 +152,7 @@ describe("toolDescriptionMode", () => {
     });
     const desc: string = tools.get("Agent").description;
     expect(desc).toContain("GLOBAL CUSTOM");
-    expect(desc).toContain("- Explore: Fast read-only search agent for locating code. (Tools:");
+    expect(desc).toMatch(/^- Explore: [^\n]+ \(Tools:/m);
   });
 
   it("{{scheduleGuideline}} expands to the schedule bullet when scheduling is on (default)", () => {

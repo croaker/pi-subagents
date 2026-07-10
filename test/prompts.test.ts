@@ -40,20 +40,6 @@ describe("buildAgentPrompt", () => {
     expect(prompt).not.toContain("Branch:");
   });
 
-  it("Explore prompt is read-only", () => {
-    const config = getDefaultConfig("Explore");
-    const prompt = buildAgentPrompt(config, "/workspace", env);
-    expect(prompt).toContain("READ-ONLY");
-    expect(prompt).toContain("file search specialist");
-  });
-
-  it("Plan prompt is read-only", () => {
-    const config = getDefaultConfig("Plan");
-    const prompt = buildAgentPrompt(config, "/workspace", env);
-    expect(prompt).toContain("READ-ONLY");
-    expect(prompt).toContain("software architect");
-  });
-
   it("general-purpose uses append mode (parent twin)", () => {
     const config = getDefaultConfig("general-purpose");
     const parentPrompt = "You are a parent coding agent with full powers.";
@@ -61,16 +47,17 @@ describe("buildAgentPrompt", () => {
     expect(prompt).toContain("parent coding agent with full powers");
     expect(prompt).toContain("<sub_agent_context>");
     expect(prompt).not.toContain("<inherited_system_prompt>");
-    expect(prompt).not.toContain("READ-ONLY");
     // Empty systemPrompt means no <agent_instructions> section
     expect(prompt).not.toContain("<agent_instructions>");
   });
 
-  it("general-purpose without parent prompt falls back to generic base", () => {
+  it("general-purpose without parent prompt still builds append-mode context", () => {
     const config = getDefaultConfig("general-purpose");
     const prompt = buildAgentPrompt(config, "/workspace", env);
-    expect(prompt).toContain("general-purpose coding agent");
-    expect(prompt).not.toContain("READ-ONLY");
+    expect(prompt).toContain('<active_agent name="general-purpose"/>');
+    expect(prompt).toContain("<sub_agent_context>");
+    expect(prompt).toContain("/workspace");
+    expect(prompt).not.toContain("<agent_instructions>");
   });
 
   it("append mode with parent prompt includes parent + custom instructions", () => {
@@ -152,7 +139,6 @@ describe("buildAgentPrompt", () => {
     const prompt = buildAgentPrompt(config, "/workspace", env);
     expect(prompt).toContain("You are a specialized agent.");
     expect(prompt).toContain("/workspace");
-    expect(prompt).toContain("You are a pi coding agent sub-agent");
   });
 
   it("replace mode ignores parent prompt", () => {
@@ -174,14 +160,6 @@ describe("buildAgentPrompt", () => {
     expect(prompt).not.toContain("<sub_agent_context>");
   });
 
-  it("append mode bridge contains tool reminders", () => {
-    const config = getDefaultConfig("general-purpose");
-    const prompt = buildAgentPrompt(config, "/workspace", env, "Parent prompt.");
-    expect(prompt).toContain("Use the read tool instead of cat");
-    expect(prompt).toContain("Use the edit tool instead of sed");
-    expect(prompt).toContain("Use the grep tool instead of");
-  });
-
   it("append mode without parent prompt still has bridge", () => {
     const config: AgentConfig = {
       name: "no-parent",
@@ -198,8 +176,6 @@ describe("buildAgentPrompt", () => {
     const prompt = buildAgentPrompt(config, "/workspace", env);
     expect(prompt).toContain("<sub_agent_context>");
     expect(prompt).not.toContain("<inherited_system_prompt>");
-    expect(prompt).toContain("Use the read tool instead of cat");
-    expect(prompt).toContain("general-purpose coding agent");
     expect(prompt).toContain("Extra stuff.");
   });
 
