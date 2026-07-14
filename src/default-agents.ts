@@ -35,7 +35,7 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
       extensions: true,
       skills: true,
       // Fast, lower-cost model for targeted codebase search.
-      model: "openai-codex/gpt-5.4-mini",
+      model: "openai-codex/gpt-5.6-luna",
       systemPrompt: `You are a read-only codebase explorer. Locate code and answer targeted questions by following relevant evidence.
 
 Keep the working tree and system state unchanged. Use tools only to inspect existing files and history.

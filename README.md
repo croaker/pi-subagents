@@ -155,7 +155,7 @@ Group completions render each agent as a separate block. The LLM receives struct
 | Type | Tools | Model | Prompt Mode | Description |
 |------|-------|-------|-------------|-------------|
 | `general-purpose` | all 7 | inherit | `append` (parent twin) | Inherits the parent's full system prompt — same rules, CLAUDE.md, project conventions |
-| `Explore` | read, bash, grep, find, ls | `openai-codex/gpt-5.4-mini` (falls back to inherit) | `replace` (standalone) | Targeted codebase search (read-only) |
+| `Explore` | read, bash, grep, find, ls | `openai-codex/gpt-5.6-luna` (falls back to inherit) | `replace` (standalone) | Targeted codebase search (read-only) |
 
 The `general-purpose` agent is a **parent twin** — it receives the parent's entire system prompt plus a sub-agent context bridge, so it follows the same rules the parent does. Explore uses a standalone prompt tailored to its read-only search role.
 

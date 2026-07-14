@@ -91,7 +91,7 @@ describe("agent type registry", () => {
 
     it("Explore uses the fast OpenAI model", () => {
       const cfg = getAgentConfig("Explore");
-      expect(cfg?.model).toBe("openai-codex/gpt-5.4-mini");
+      expect(cfg?.model).toBe("openai-codex/gpt-5.6-luna");
     });
 
     it("default agents are marked isDefault", () => {
