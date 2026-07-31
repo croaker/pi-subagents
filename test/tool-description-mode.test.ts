@@ -93,6 +93,21 @@ describe("toolDescriptionMode", () => {
     expect(desc).toContain(DEFAULT_AGENTS.get("Explore")?.description);
   });
 
+  it("routes by requested deliverable rather than need for codebase search", () => {
+    const tools = setup();
+    const tool = tools.get("Agent");
+    const guidance = tool.promptGuidelines.join("\n");
+    const explore = DEFAULT_AGENTS.get("Explore");
+    const generalPurpose = DEFAULT_AGENTS.get("general-purpose");
+
+    expect(explore?.description).toContain("Use it only when the requested deliverable");
+    expect(explore?.description).toContain("plan review");
+    expect(explore?.systemPrompt).toContain("do not perform code or plan reviews");
+    expect(generalPurpose?.description).toContain("reviews, diagnosis, design analysis");
+    expect(guidance).toContain("Choose agents by the requested deliverable");
+    expect(guidance).toContain("even when substantial codebase search is required");
+  });
+
   it("compact mode swaps in the short description with one-line type list", () => {
     const tools = setup({ toolDescriptionMode: "compact" });
     const desc: string = tools.get("Agent").description;
