@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Agent selection now follows the requested deliverable rather than whether work requires codebase search.** `Explore` is limited to locating files, symbols, references, precedents, and tracing local code paths; its standalone prompt explicitly excludes code and plan reviews, diagnosis, design decisions, and recommendations. The `general-purpose` description now positively owns that evaluative work even when it requires substantial codebase search. Known targets still use direct tools.
+- **The built-in `Explore` agent now defaults to low thinking.** Unspecified Explore calls no longer fall through to pi's global `defaultThinkingLevel`, which could make every direct lookup run at high effort. Explicit `thinking` tool parameters still override this embedded default, while custom-agent frontmatter remains authoritative.
 - **The built-in `Explore` agent now uses `openai-codex/gpt-5.6-luna`.** Its standalone prompt is concise and frames the role around targeted, evidence-backed codebase search while retaining the read-only working-tree invariant. This removes the previous Anthropic-specific default while keeping direct codebase lookups fast and inexpensive.
 
 ### Fixed

@@ -152,12 +152,12 @@ Group completions render each agent as a separate block. The LLM receives struct
 
 ## Default Agent Types
 
-| Type | Tools | Model | Prompt Mode | Description |
-|------|-------|-------|-------------|-------------|
-| `general-purpose` | all 7 | inherit | `append` (parent twin) | Inherits the parent's full system prompt — same rules, CLAUDE.md, project conventions |
-| `Explore` | read, bash, grep, find, ls | `openai-codex/gpt-5.6-luna` (falls back to inherit) | `replace` (standalone) | Targeted codebase search (read-only) |
+| Type | Tools | Model | Thinking | Prompt Mode | Description |
+|------|-------|-------|----------|-------------|-------------|
+| `general-purpose` | all 7 | inherit | inherit | `append` (parent twin) | Inherits the parent's full system prompt — same rules, CLAUDE.md, project conventions |
+| `Explore` | read, bash, grep, find, ls | `openai-codex/gpt-5.6-luna` (falls back to inherit) | low | `replace` (standalone) | Targeted codebase search (read-only) |
 
-The `general-purpose` agent is a **parent twin** — it receives the parent's entire system prompt plus a sub-agent context bridge, so it follows the same rules the parent does. Explore uses a standalone prompt tailored to its read-only search role.
+The `general-purpose` agent is a **parent twin** — it receives the parent's entire system prompt plus a sub-agent context bridge, so it follows the same rules the parent does. Explore uses a standalone prompt tailored to its read-only search role and defaults to low thinking so direct lookups stay cheap; callers can explicitly request another thinking level.
 
 Default agents can be **ejected** (`/agents` → select agent → Eject) to export them as `.md` files for customization, **overridden** by creating a `.md` file with the same name (e.g. `.pi/agents/general-purpose.md`), or **disabled** per-project with `enabled: false` frontmatter.
 

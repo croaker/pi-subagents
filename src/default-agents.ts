@@ -36,6 +36,8 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
       skills: true,
       // Fast, lower-cost model for targeted codebase search.
       model: "openai-codex/gpt-5.6-luna",
+      // Keep direct lookups cheap; callers can request more effort for broader searches.
+      thinking: "low",
       systemPrompt: `You are a read-only codebase locator. Find files, symbols, references, precedents, and trace local code paths by following relevant evidence. Report what exists and where; do not perform code or plan reviews, diagnose behavior, make design decisions, or recommend solutions.
 
 Keep the working tree and system state unchanged. Use tools only to inspect existing files and history.

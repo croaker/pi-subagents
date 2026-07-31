@@ -51,6 +51,32 @@ describe("resolveAgentInvocationConfig", () => {
     expect(resolved.isolation).toBe("worktree");
   });
 
+  it("lets tool-call params override embedded defaults", () => {
+    const resolved = resolveAgentInvocationConfig(
+      makeConfig({
+        isDefault: true,
+        thinking: "low",
+      }),
+      {
+        thinking: "high",
+      },
+    );
+
+    expect(resolved.thinking).toBe("high");
+  });
+
+  it("uses embedded defaults when tool-call params are omitted", () => {
+    const resolved = resolveAgentInvocationConfig(
+      makeConfig({
+        isDefault: true,
+        thinking: "low",
+      }),
+      {},
+    );
+
+    expect(resolved.thinking).toBe("low");
+  });
+
   it("uses tool-call params when no agent config is available", () => {
     const resolved = resolveAgentInvocationConfig(undefined, {
       model: "provider/param-model",

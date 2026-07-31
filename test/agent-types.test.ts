@@ -89,9 +89,10 @@ describe("agent type registry", () => {
       expect(config.builtinToolNames).not.toContain("write");
     });
 
-    it("Explore uses the fast OpenAI model", () => {
+    it("Explore uses the fast OpenAI model with low thinking", () => {
       const cfg = getAgentConfig("Explore");
       expect(cfg?.model).toBe("openai-codex/gpt-5.6-luna");
+      expect(cfg?.thinking).toBe("low");
     });
 
     it("default agents are marked isDefault", () => {
