@@ -863,6 +863,38 @@ export class AgentManager {
     return this.agents.get(id);
   }
 
+  /**
+   * Resolve an Agent-tool resume id to either its retained record or the
+   * persisted tombstone left after record cleanup. Exact ids only: handles are
+   * a separate user-facing namespace resolved by `resolveMention`.
+   *
+   * Once a tombstone has been reopened, its old id follows the live record that
+   * reclaimed its handle. This prevents a retry with the stale id from forking
+   * the same persisted conversation while the replacement run is still live.
+   */
+  resolveResume(id: string): MentionResolution | undefined {
+    const byId = this.agents.get(id);
+    if (byId?.parentAgentId === undefined && byId !== undefined) return { kind: "live", record: byId };
+
+    const entry = [...this.tombstones.values()].find((candidate) => candidate.id === id);
+    if (!entry) return undefined;
+
+    const reopened = [...this.agents.values()].find(
+      (record) => record.parentAgentId === undefined && record.handle === entry.handle,
+    );
+    if (!reopened) return { kind: "tombstone", entry };
+    if (reopened.session || reopened.status === "running" || reopened.status === "queued") {
+      return { kind: "live", record: reopened };
+    }
+
+    // Opening can fail before a child session exists (deleted/corrupt file,
+    // provider setup failure). That dead replacement must not shadow the
+    // original tombstone forever or reserve its reclaimed handle against a
+    // retry with the old id.
+    this.removeRecord(reopened.id, reopened);
+    return { kind: "tombstone", entry };
+  }
+
   /** Handles already in use, so a fresh spawn can pick an unclaimed one. */
   private takenHandles(): Set<string> {
     const taken = new Set<string>();

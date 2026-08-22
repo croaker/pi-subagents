@@ -196,15 +196,28 @@ describe("AgentManager — tombstones outliving the GC", () => {
     });
   });
 
+  it("resolves an evicted agent by its old id for Agent-tool resume", async () => {
+    manager = new AgentManager();
+    const { id } = await evictable("Explore", "audit the RPC path", "/sessions/explore.jsonl");
+
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    expect(manager.resolveResume(id)).toMatchObject({
+      kind: "tombstone",
+      entry: { id, handle: "explore", sessionFile: "/sessions/explore.jsonl" },
+    });
+  });
+
   it("leaves nothing behind when the session was only ever in memory", async () => {
     // Without a file there is no conversation to reopen, so promising a resume
     // would be a lie — the mention has to fall through to starting a new agent.
     manager = new AgentManager();
-    await evictable("Explore", "ephemeral", undefined);
+    const { id } = await evictable("Explore", "ephemeral", undefined);
 
     await vi.advanceTimersByTimeAsync(TICK);
 
     expect(manager.resolveMention("explore")).toBeUndefined();
+    expect(manager.resolveResume(id)).toBeUndefined();
     expect(manager.listTombstones()).toHaveLength(0);
   });
 
@@ -255,7 +268,7 @@ describe("AgentManager — tombstones outliving the GC", () => {
     // The resume path's whole contract: `handleBase(type)` cannot reproduce a
     // numbered handle, so the spawn takes the tombstone's names verbatim.
     manager = new AgentManager();
-    await evictable("Explore", "first", "/sessions/first.jsonl");
+    const { id: oldId } = await evictable("Explore", "first", "/sessions/first.jsonl");
     manager.spawn(mockPi, mockCtx, "Explore", "second", { description: "second", isBackground: true });
     await vi.advanceTimersByTimeAsync(TICK);
 
@@ -267,6 +280,27 @@ describe("AgentManager — tombstones outliving the GC", () => {
     } as any);
 
     expect(manager.getRecord(id)).toMatchObject({ handle: "explore", alias: "auth-audit" });
+    // A retry carrying the old id follows the replacement record instead of
+    // reopening the same persisted conversation a second time.
+    expect(manager.resolveResume(oldId)).toMatchObject({ kind: "live", record: { id } });
+  });
+
+  it("lets the old id retry after a replacement fails before creating a session", async () => {
+    manager = new AgentManager();
+    const { id: oldId } = await evictable("Explore", "first", "/sessions/first.jsonl");
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    vi.mocked(runAgent).mockRejectedValue(new Error("could not open session"));
+    const replacementId = manager.spawn(mockPi, mockCtx, "Explore", "resumed", {
+      description: "first",
+      isBackground: true,
+      resumeSessionFile: "/sessions/first.jsonl",
+      reclaim: { handle: "explore" },
+    } as any);
+    await manager.getRecord(replacementId)!.promise;
+
+    expect(manager.resolveResume(oldId)).toMatchObject({ kind: "tombstone", entry: { id: oldId } });
+    expect(manager.getRecord(replacementId)).toBeUndefined();
   });
 
   it("ignores a reclaim on a nested child, which has no name to hold", async () => {

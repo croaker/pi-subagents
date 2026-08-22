@@ -208,6 +208,69 @@ describe("Agent tool — background resume wiring", () => {
     await lifecycle.get("session_shutdown")?.({}, ctx);
   });
 
+  it("anchors a reopened record's transcript after its persisted history", async () => {
+    vi.useFakeTimers();
+    try {
+      const sessionFile = join(cwd, "persisted-agent.jsonl");
+      writeFileSync(sessionFile, "");
+      session.sessionManager = { getSessionFile: () => sessionFile };
+
+      const { pi, tools, lifecycle } = makePi();
+      subagentsExtension(pi);
+      const ctx = makeCtx(cwd);
+      const oldId = agentIdOf(await tools.get("Agent").execute(
+        "spawn-call",
+        { prompt: "first task", description: "First task", subagent_type: "general-purpose", run_in_background: true },
+        undefined,
+        undefined,
+        ctx,
+      ));
+      const registry = (globalThis as any)[Symbol.for("pi-subagents:manager")];
+      await registry.getRecord(oldId).promise;
+      registry.getRecord(oldId).completedAt = Date.now() - 11 * 60_000;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(registry.getRecord(oldId)).toBeUndefined();
+
+      session = {
+        ...session,
+        subscribe: vi.fn(() => vi.fn()),
+        dispose: vi.fn(),
+        sessionManager: { getSessionFile: () => sessionFile },
+      };
+      vi.mocked(writeInitialEntry).mockClear();
+      vi.mocked(ensureOutputFile).mockClear();
+      vi.mocked(streamToOutputFile).mockClear();
+
+      await tools.get("Agent").execute(
+        "resume-call",
+        {
+          prompt: "keep going",
+          description: "ignored resume label",
+          subagent_type: "Explore",
+          resume: oldId,
+          run_in_background: true,
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+
+      expect(writeInitialEntry).not.toHaveBeenCalled();
+      expect(ensureOutputFile).toHaveBeenCalledTimes(1);
+      expect(streamToOutputFile).toHaveBeenCalledWith(
+        session,
+        expect.any(String),
+        expect.any(String),
+        cwd,
+        3,
+      );
+
+      await lifecycle.get("session_shutdown")?.({}, ctx);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Resume ignores subagent_type — the record keeps the type it was spawned
   // with — so a "created" event carrying the caller's type would re-register the
   // agent under the wrong one in cross-extension mirrors keyed by id.

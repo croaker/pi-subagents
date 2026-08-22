@@ -36,7 +36,7 @@ import { SubagentScheduler } from "./schedule.js";
 import { resolveStorePath, ScheduleStore } from "./schedule-store.js";
 import { applyAndEmitLoaded, loadSettings, type SubagentsSettings, saveAndEmitChanged, type ToolDescriptionMode } from "./settings.js";
 import { getForegroundOutcomeNote, getStatusNote, partialOutputSuffix } from "./status-note.js";
-import { type AgentConfig, type AgentInvocation, type AgentMentionMode, type AgentRecord, type JoinMode, type NotificationDetails, type SubagentType, type WidgetMode } from "./types.js";
+import { type AgentConfig, type AgentInvocation, type AgentMentionMode, type AgentRecord, type AgentTombstone, type JoinMode, type NotificationDetails, type SubagentType, type WidgetMode } from "./types.js";
 import { createMentionProvider, mentionRoster, type TypeInfo } from "./ui/agent-mention.js";
 import {
   type AgentActivity,
@@ -643,13 +643,33 @@ export default function (pi: ExtensionAPI) {
     // be a path-traversal primitive.
     delete safeOptions.rootSessionId;
     // Worse than rootSessionId: this one names a file to OPEN and replay as a
-    // conversation. Only the mention dispatcher may set it, and only from a
-    // path this extension itself recorded — never from anything a caller sent.
+    // conversation. Only trusted resume paths may set it, and only from a path
+    // this extension itself recorded — never from anything a caller sent.
     delete safeOptions.resumeSessionFile;
     // Bypasses handle allocation, so a forged value would duplicate a live
     // agent's name and make `@handle` ambiguous. Same rule: dispatcher only.
     delete safeOptions.reclaim;
     return spawnResolved(piRef, ctxRef, type, prompt, safeOptions);
+  };
+
+  /**
+   * Validate the persisted capabilities needed to reopen an evicted agent.
+   * Shared by prompt mentions and Agent({ resume }): both must reject missing
+   * session files and unavailable agent definitions identically, without ever
+   * falling back to a different type.
+   */
+  const prepareTombstoneResume = (entry: AgentTombstone) => {
+    if (!existsSync(entry.sessionFile)) {
+      manager.dropTombstone(entry.handle);
+      return { kind: "missing-session" } as const;
+    }
+
+    reloadCustomAgents();
+    const dispatch = resolveSpawnType(entry.type);
+    if (!dispatch.ok || dispatch.fellBackFrom !== undefined) {
+      return { kind: "unavailable-type" } as const;
+    }
+    return { kind: "ready", type: dispatch.type } as const;
   };
 
   /**
@@ -866,38 +886,26 @@ export default function (pi: ExtensionAPI) {
       const entry = resolved.entry;
       const target = `@${entry.alias ?? entry.handle}`;
 
-      // Checked here rather than left to SessionManager.open: that runs inside
-      // runAgent, whose rejection lands on the record as an agent error, not in
-      // the catch below. A `/new` in another pi window or a manual delete makes
-      // the conversation unrecoverable (Claude Code's `not_reachable`), so drop
-      // the entry — a row that can only ever fail is worse than none — and say
-      // so rather than quietly sending this message to an unrelated agent.
-      if (!existsSync(entry.sessionFile)) {
-        manager.dropTombstone(entry.handle);
+      const prepared = prepareTombstoneResume(entry);
+      if (prepared.kind === "missing-session") {
+        // A `/new` in another pi window or a manual delete makes the
+        // conversation unrecoverable. The helper drops the dead entry so it no
+        // longer holds a handle that can only ever fail.
         ctx.ui.notify(`Could not resume ${target} — its session is gone.`, "warning");
         return { action: "handled" };
       }
-
-      // The Agent tool deliberately falls back to general-purpose for a type it
-      // cannot resolve (#183), which covers a deleted file AND a merely
-      // disabled one. A resume must not inherit that: reopening this
-      // conversation under a different agent's prompt and tools is not
-      // continuing it, and the new record would re-tombstone under the
-      // substitute, so the handle would never find its way back.
-      reloadCustomAgents();
-      const dispatch = resolveSpawnType(entry.type);
-      if (!dispatch.ok || dispatch.fellBackFrom !== undefined) {
+      if (prepared.kind === "unavailable-type") {
         // The tombstone stays: re-enabling the agent makes the handle work
-        // again, which a drop would foreclose.
+        // again, which dropping it would foreclose.
         ctx.ui.notify(`Could not resume ${target} — the ${entry.type} agent is no longer available.`, "warning");
         return { action: "handled" };
       }
 
       try {
         // spawnResolved, not spawnTopLevel: the latter strips
-        // `resumeSessionFile` and `reclaim` as untrusted. This path is the
-        // exception — both come from a tombstone this extension wrote.
-        spawnResolved(pi, ctx, dispatch.type, mention.message, {
+        // `resumeSessionFile` and `reclaim` as untrusted. Both values here came
+        // from a tombstone this extension wrote.
+        spawnResolved(pi, ctx, prepared.type, mention.message, {
           description: entry.description,
           reclaim: { handle: entry.handle, alias: entry.alias },
           resumeSessionFile: entry.sessionFile,
@@ -1500,7 +1508,7 @@ Terse command-style prompts produce shallow, generic work.
       ),
       resume: Type.Optional(
         Type.String({
-          description: "Optional agent ID to resume from. Continues from previous context. Resumes detached like any other spawn; pass run_in_background: false to block and get the result inline. An agent can only be resumed once its current run has finished — use steer_subagent to reach one mid-run.",
+          description: "Optional agent ID to resume from. Continues from previous context, reopening a persisted session after its in-memory record is cleaned up when available. A reopened session receives a new agent ID. Resumes detached like any other spawn; pass run_in_background: false to block and get the result inline. An agent can only be resumed once its current run has finished — use steer_subagent to reach one mid-run.",
         }),
       ),
       isolated: Type.Optional(
@@ -1642,29 +1650,50 @@ Terse command-style prompts produce shallow, generic work.
       // Reload custom agents so new project/global .md files are picked up without restart
       reloadCustomAgents();
 
+      // Scheduling never resumes a conversation. Reject this before resolving a
+      // persisted tombstone so an invalid combination cannot mutate its handle
+      // state (for example by dropping an entry whose session file disappeared).
+      if (params.schedule && params.resume) {
+        return textResult("Cannot combine `schedule` with `resume` — schedules create fresh agents.");
+      }
+
       const rawType = params.subagent_type as SubagentType;
-      // Single decision point for dispatch (#183): unknown, disabled and
-      // case-ambiguous types are refused here, BEFORE anything spawns, so a
-      // background or scheduled call can't start running the wrong agent while
-      // the caller is still unaware. `fallbackSubagent` decides whether an
-      // unresolvable type falls back or fails closed.
+      const resumeResolution = params.resume ? manager.resolveResume(params.resume) : undefined;
+      if (params.resume && !resumeResolution) {
+        return textResult(`Agent not found: "${params.resume}". It may have been cleaned up without a persisted session.`);
+      }
+
+      let evictedResume: { entry: AgentTombstone; type: SubagentType } | undefined;
+      if (resumeResolution?.kind === "tombstone") {
+        const prepared = prepareTombstoneResume(resumeResolution.entry);
+        if (prepared.kind === "missing-session") {
+          return textResult(`Agent "${params.resume}" cannot be resumed because its persisted session is gone.`);
+        }
+        if (prepared.kind === "unavailable-type") {
+          return textResult(
+            `Agent "${params.resume}" cannot be resumed because its ${resumeResolution.entry.type} agent type is no longer available.`,
+          );
+        }
+        evictedResume = { entry: resumeResolution.entry, type: prepared.type };
+      }
+
+      // Single decision point for new-spawn dispatch (#183). A live resume
+      // ignores subagent_type and keeps its already-bound session. An evicted
+      // resume instead uses the exact type recorded in its trusted tombstone,
+      // validated above without fallback, so the reopened session receives the
+      // type's current model, prompt and tool configuration.
       const dispatch = resolveSpawnType(rawType);
-      // `resume` replays a stored session and ignores `subagent_type` entirely,
-      // but the parameter is required by the schema — so gating it here would
-      // make a live agent unresumable the moment its type is deleted, disabled,
-      // or gains a case-clashing sibling. Only a real spawn is gated.
       if (!dispatch.ok && !params.resume) return textResult(dispatch.message);
-      const subagentType = dispatch.ok ? dispatch.type : rawType;
+      const subagentType = evictedResume?.type ?? (dispatch.ok ? dispatch.type : rawType);
       // What the caller actually asked for, named once: `fellBackFrom` is "" for
       // a blank request, so reading it inline invites the `??`-vs-`||` slip that
       // once persisted an empty type into a scheduled job.
       const requestedType = (dispatch.ok && dispatch.fellBackFrom) || subagentType;
       // Computed at resolution rather than after the run, so the background and
-      // schedule branches carry it too — previously it existed only on the
-      // foreground path. Resume deliberately doesn't: it replays the stored
-      // session and ignores `subagent_type` entirely, so a note about type
-      // substitution would be describing something that didn't happen.
-      const fallbackNote = dispatch.ok && dispatch.fellBackFrom !== undefined
+      // schedule branches carry it too. Resume deliberately doesn't: live
+      // resume keeps the original session, while evicted resume uses the
+      // tombstone's exact type rather than the caller's required placeholder.
+      const fallbackNote = !params.resume && dispatch.ok && dispatch.fellBackFrom !== undefined
         ? `Note: Unknown agent type "${dispatch.fellBackFrom}" — using ${resolveType(subagentType) ? subagentType : "the fallback agent config"}.\n\n`
         : "";
 
@@ -1718,7 +1747,11 @@ Terse command-style prompts produce shallow, generic work.
       const attachTranscript = (rec: AgentRecord | undefined, agentId: string): void => {
         if (!rec || !outputTranscript) return;
         rec.outputFile = createOutputFilePath(ctx.cwd, agentId, ctx.sessionManager.getSessionId());
-        writeInitialEntry(rec.outputFile, agentId, params.prompt, ctx.cwd);
+        // A reopened session already contains its prior conversation. Let the
+        // anchored stream below write this run's prompt from the session rather
+        // than writing it here and then copying old messages behind it.
+        if (evictedResume) ensureOutputFile(rec.outputFile);
+        else writeInitialEntry(rec.outputFile, agentId, params.prompt, ctx.cwd);
       };
 
       const parentModelId = ctx.model?.id;
@@ -1742,21 +1775,25 @@ Terse command-style prompts produce shallow, generic work.
       const modeLabel = getPromptModeLabel(subagentType);
       const { tags: invocationTags } = buildInvocationTags(agentInvocation);
       const agentTags = modeLabel ? [modeLabel, ...invocationTags] : invocationTags;
+      const taskDescription = evictedResume?.entry.description ?? params.description;
       const detailBase = {
         displayName,
-        description: params.description,
+        description: taskDescription,
         subagentType,
         modelName,
         tags: agentTags.length > 0 ? agentTags : undefined,
       };
+      const spawnIdentity = evictedResume
+        ? {
+            resumeSessionFile: evictedResume.entry.sessionFile,
+            reclaim: { handle: evictedResume.entry.handle, alias: evictedResume.entry.alias },
+          }
+        : { name: params.name as string | undefined };
 
       // ---- Schedule: register a job, don't spawn now ----
       if (params.schedule) {
         if (!isSchedulingEnabled()) {
           return textResult("Scheduling is disabled in this project. Enable via /agents → Settings → Scheduling.");
-        }
-        if (params.resume) {
-          return textResult("Cannot combine `schedule` with `resume` — schedules create fresh agents.");
         }
         if (params.inherit_context) {
           return textResult("Cannot combine `schedule` with `inherit_context` — there is no parent conversation at fire time.");
@@ -1793,14 +1830,23 @@ Terse command-style prompts produce shallow, generic work.
         }
       }
 
-      // Resume existing agent
-      if (params.resume) {
-        const existing = manager.getRecord(params.resume);
-        if (!existing || existing.parentAgentId) {
-          return textResult(`Agent not found: "${params.resume}". It may have been cleaned up.`);
-        }
+      // Resume a retained live session in place. An evicted session skips this
+      // branch and falls through to the ordinary spawn paths below, carrying
+      // its trusted session file and reclaimed handles into a new record.
+      if (params.resume && resumeResolution?.kind === "live") {
+        const existing = resumeResolution.record;
         if (!existing.session) {
           return textResult(`Agent "${params.resume}" has no active session to resume.`);
+        }
+        // Both foreground and background resume must refuse re-entry. The
+        // background path used to own this guard because it is detached; an old
+        // tombstone id can now resolve to that replacement too, including when
+        // the retry asks to block in the foreground.
+        if (existing.status === "running" || existing.status === "queued") {
+          return textResult(
+            `Agent "${params.resume}" is still ${existing.status} — it can only be resumed once its current run finishes.\n` +
+            `Use steer_subagent to send it a message mid-run, or get_subagent_result to wait for it.`,
+          );
         }
 
         // Background resume: detached run that notifies on completion, mirroring
@@ -1809,18 +1855,6 @@ Terse command-style prompts produce shallow, generic work.
         // so a resumed agent always blocked the main loop until it finished.
         if (runInBackground) {
           const id = existing.id;
-          // A detached resume hands control back while the record stays
-          // "running", so nothing stops the model from resuming the same agent
-          // again mid-run. manager.resume() refuses that (it would orphan the
-          // live run's abort controller); say why here, where the model can act
-          // on it, instead of letting it read as a generic failure.
-          if (existing.status === "running" || existing.status === "queued") {
-            return textResult(
-              `Agent "${params.resume}" is still ${existing.status} — it can only be resumed once its current run finishes.\n` +
-              `Use steer_subagent to send it a message mid-run, or get_subagent_result to wait for it.`,
-            );
-          }
-
           const record = await startBackgroundResume(ctx, existing, params.prompt, {
             outputTranscript,
             maxTurns: effectiveMaxTurns,
@@ -1871,7 +1905,8 @@ Terse command-style prompts produce shallow, generic work.
           origBgOnSession(session);
           const rec = manager.getRecord(id);
           if (rec?.outputFile) {
-            rec.outputCleanup = streamToOutputFile(session, rec.outputFile, id, ctx.cwd);
+            const transcriptAnchor = evictedResume ? session.messages.length : undefined;
+            rec.outputCleanup = streamToOutputFile(session, rec.outputFile, id, ctx.cwd, transcriptAnchor);
           }
         };
 
@@ -1879,8 +1914,8 @@ Terse command-style prompts produce shallow, generic work.
         // tool call failed only when execute throws, and a returned message
         // reads to the model as a subagent that ran and reported this (#179).
         id = manager.spawn(pi, ctx, subagentType, params.prompt, {
-          description: params.description,
-          name: params.name as string | undefined,
+          description: taskDescription,
+          ...spawnIdentity,
           model,
           maxTurns: effectiveMaxTurns,
           isolated,
@@ -1924,16 +1959,19 @@ Terse command-style prompts produce shallow, generic work.
         pi.events.emit("subagents:created", {
           id,
           type: subagentType,
-          description: params.description,
+          description: taskDescription,
           isBackground: true,
         });
 
         const isQueued = record?.status === "queued";
+        const startLabel = evictedResume
+          ? `${isQueued ? "Agent queued to reopen" : "Agent reopened"} in background.\nPrevious agent ID: ${evictedResume.entry.id}\n`
+          : `Agent ${isQueued ? "queued" : "started"} in background.\n`;
         return textResult(
-          `${fallbackNote}Agent ${isQueued ? "queued" : "started"} in background.\n` +
+          `${fallbackNote}${startLabel}` +
           `Agent ID: ${id}\n` +
           `Type: ${displayName}\n` +
-          `Description: ${params.description}\n` +
+          `Description: ${taskDescription}\n` +
           (record?.outputFile ? `Output file: ${record.outputFile}\n` : "") +
           (isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : "") +
           `\nYou will be notified when this agent completes.\n` +
@@ -1993,7 +2031,8 @@ Terse command-style prompts produce shallow, generic work.
         if (fgId) {
           const rec = manager.getRecord(fgId);
           if (rec?.outputFile) {
-            rec.outputCleanup = streamToOutputFile(session, rec.outputFile, fgId, ctx.cwd);
+            const transcriptAnchor = evictedResume ? session.messages.length : undefined;
+            rec.outputCleanup = streamToOutputFile(session, rec.outputFile, fgId, ctx.cwd, transcriptAnchor);
           }
         }
       };
@@ -2009,8 +2048,8 @@ Terse command-style prompts produce shallow, generic work.
       let record: AgentRecord;
       try {
         const fgResult = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
-          description: params.description,
-          name: params.name as string | undefined,
+          description: taskDescription,
+          ...spawnIdentity,
           model,
           maxTurns: effectiveMaxTurns,
           isolated,
@@ -2048,7 +2087,8 @@ Terse command-style prompts produce shallow, generic work.
 
       if (record.status === "error") {
         // Error headline + any partial output the run produced before failing.
-        return textResult(`${fallbackNote}Agent failed: ${record.error}${partialOutputSuffix(record)}`, details);
+        const failureLabel = evictedResume ? `Agent reopened as ${record.id} but failed` : "Agent failed";
+        return textResult(`${fallbackNote}${failureLabel}: ${record.error}${partialOutputSuffix(record)}`, details);
       }
 
       const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
@@ -2058,8 +2098,11 @@ Terse command-style prompts produce shallow, generic work.
         const costText = formatCost(getLifetimeCost(record.lifetimeUsage));
         if (costText) statsParts.push(costText);
       }
+      const completionLabel = evictedResume
+        ? `Agent reopened as ${record.id} and completed`
+        : "Agent completed";
       return textResult(
-        `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getForegroundOutcomeNote(record.status)}.\n\n` +
+        `${fallbackNote}${completionLabel} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getForegroundOutcomeNote(record.status)}.\n\n` +
         (record.result?.trim() || "No output."),
         details,
       );

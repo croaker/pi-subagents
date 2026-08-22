@@ -1050,6 +1050,101 @@ describe("resuming an evicted agent by name", () => {
     expect(uiCtx.ui.notify).toHaveBeenCalledWith("Resuming @explore", "info");
   });
 
+  it("lets the Agent tool reopen an evicted session by its old id", async () => {
+    const { tools } = boot();
+    finishedRun(fakeSession());
+    const oldId = await spawnBackground(tools);
+    await flush();
+    const manager = await evict(oldId);
+    vi.mocked(runAgent).mockClear();
+    heldRun(fakeSession());
+
+    const params = {
+      prompt: "anything else?",
+      description: "ignored resume label",
+      subagent_type: "general-purpose",
+      resume: oldId,
+      run_in_background: true,
+    };
+    const reopened = await tools.get("Agent").execute(
+      "tc-resume",
+      params,
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const newId = /Agent ID: (\S+)/.exec(textOf(reopened))![1];
+
+    expect(newId).not.toBe(oldId);
+    expect(textOf(reopened)).toContain(`Previous agent ID: ${oldId}`);
+    expect(vi.mocked(runAgent)).toHaveBeenCalledWith(
+      expect.anything(),
+      "Explore",
+      "anything else?",
+      expect.objectContaining({ resumeSessionFile: sessionPath() }),
+    );
+    expect(manager.getRecord(newId)).toMatchObject({
+      type: "Explore",
+      description: "find flaky tests",
+      handle: "explore",
+    });
+
+    // Retrying with the stale id follows the replacement record. It must not
+    // fork the same persisted conversation while the reopened run is live.
+    const retry = await tools.get("Agent").execute(
+      "tc-retry",
+      { ...params, run_in_background: false },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    expect(textOf(retry)).toContain("still running");
+    expect(vi.mocked(runAgent)).toHaveBeenCalledTimes(1);
+  });
+
+  it("can reopen an evicted session in the foreground", async () => {
+    const { tools } = boot();
+    finishedRun(fakeSession());
+    const oldId = await spawnBackground(tools);
+    await flush();
+    await evict(oldId);
+    vi.mocked(runAgent).mockClear();
+    const reopenedSession = fakeSession();
+    vi.mocked(runAgent).mockImplementation(async (_ctx: any, _type: any, _prompt: any, opts: any) => {
+      opts.onSessionCreated?.(reopenedSession);
+      return {
+        responseText: "reopened answer",
+        session: reopenedSession,
+        aborted: false,
+        steered: false,
+        failure: undefined,
+      } as any;
+    });
+
+    const reopened = await tools.get("Agent").execute(
+      "tc-resume",
+      {
+        prompt: "anything else?",
+        description: "ignored resume label",
+        subagent_type: "general-purpose",
+        resume: oldId,
+        run_in_background: false,
+      },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    expect(textOf(reopened)).toContain("Agent reopened as");
+    expect(textOf(reopened)).toContain("reopened answer");
+    expect(vi.mocked(runAgent)).toHaveBeenCalledWith(
+      expect.anything(),
+      "Explore",
+      "anything else?",
+      expect.objectContaining({ resumeSessionFile: sessionPath() }),
+    );
+  });
+
   it("hands the resumed agent the handle back instead of numbering it", async () => {
     // Otherwise the resume lands on `@explore-2` and the tombstone keeps
     // `@explore`, so the name the user just typed still points at the corpse.
