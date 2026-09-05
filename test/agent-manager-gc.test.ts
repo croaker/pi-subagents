@@ -167,7 +167,7 @@ describe("AgentManager — tombstones outliving the GC", () => {
   });
 
   /** Spawn, settle, and age past the cutoff so the next tick evicts it. */
-  async function evictable(type: string, prompt: string, sessionFile?: string) {
+  async function evictable(type: string, prompt: string, sessionFile?: string, name?: string) {
     vi.mocked(runAgent).mockResolvedValue({
       responseText: "done",
       session: { dispose: vi.fn() } as any,
@@ -175,7 +175,7 @@ describe("AgentManager — tombstones outliving the GC", () => {
       steered: false,
     } as any);
     manager ??= new AgentManager();
-    const id = manager.spawn(mockPi, mockCtx, type, prompt, { description: prompt, isBackground: true });
+    const id = manager.spawn(mockPi, mockCtx, type, prompt, { description: prompt, isBackground: true, name });
     const record = manager.getRecord(id)!;
     await record.promise;
     record.sessionFile = sessionFile;
@@ -205,6 +205,23 @@ describe("AgentManager — tombstones outliving the GC", () => {
     expect(manager.resolveResume(id)).toMatchObject({
       kind: "tombstone",
       entry: { id, handle: "explore", sessionFile: "/sessions/explore.jsonl" },
+    });
+  });
+
+  it("resolves an evicted agent by the name assigned at spawn", async () => {
+    manager = new AgentManager();
+    const { id } = await evictable(
+      "general-purpose",
+      "implement checkpoint two",
+      "/sessions/checkpoint-2.jsonl",
+      "checkpoint-2-implementer",
+    );
+
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    expect(manager.resolveResume("checkpoint-2-implementer")).toMatchObject({
+      kind: "tombstone",
+      entry: { id, alias: "checkpoint-2-implementer", sessionFile: "/sessions/checkpoint-2.jsonl" },
     });
   });
 

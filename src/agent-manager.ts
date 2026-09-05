@@ -864,20 +864,23 @@ export class AgentManager {
   }
 
   /**
-   * Resolve an Agent-tool resume id to either its retained record or the
-   * persisted tombstone left after record cleanup. Exact ids only: handles are
-   * a separate user-facing namespace resolved by `resolveMention`.
+   * Resolve an Agent-tool resume reference to either its retained record or the
+   * persisted tombstone left after record cleanup. Accepts the same ids,
+   * type-derived handles, and assigned names as the other agent tools.
    *
    * Once a tombstone has been reopened, its old id follows the live record that
    * reclaimed its handle. This prevents a retry with the stale id from forking
    * the same persisted conversation while the replacement run is still live.
    */
-  resolveResume(id: string): MentionResolution | undefined {
-    const byId = this.agents.get(id);
-    if (byId?.parentAgentId === undefined && byId !== undefined) return { kind: "live", record: byId };
+  resolveResume(ref: string): MentionResolution | undefined {
+    const byId = this.agents.get(ref);
+    if (byId) {
+      return byId.parentAgentId === undefined ? { kind: "live", record: byId } : undefined;
+    }
 
-    const entry = [...this.tombstones.values()].find((candidate) => candidate.id === id);
-    if (!entry) return undefined;
+    const resolved = this.resolveMention(ref);
+    if (!resolved || resolved.kind === "live") return resolved;
+    const entry = resolved.entry;
 
     const reopened = [...this.agents.values()].find(
       (record) => record.parentAgentId === undefined && record.handle === entry.handle,

@@ -1102,6 +1102,52 @@ describe("resuming an evicted agent by name", () => {
     expect(vi.mocked(runAgent)).toHaveBeenCalledTimes(1);
   });
 
+  it("lets the Agent tool reopen an evicted session by its assigned name", async () => {
+    const { tools } = boot();
+    finishedRun(fakeSession());
+    const spawned = await tools.get("Agent").execute(
+      "tc-named",
+      {
+        prompt: "implement checkpoint two",
+        description: "implement checkpoint two",
+        subagent_type: "general-purpose",
+        name: "checkpoint-2-implementer",
+        run_in_background: true,
+      },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const oldId = /Agent ID: (\S+)/.exec(textOf(spawned))![1];
+    await flush();
+    await evict(oldId);
+    vi.mocked(runAgent).mockClear();
+    heldRun(fakeSession());
+
+    const reopened = await tools.get("Agent").execute(
+      "tc-resume",
+      {
+        prompt: "add review-driven coverage",
+        description: "add review-driven coverage",
+        subagent_type: "general-purpose",
+        resume: "checkpoint-2-implementer",
+        run_in_background: true,
+      },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    expect(textOf(reopened)).not.toContain("Agent not found");
+    expect(textOf(reopened)).toContain(`Previous agent ID: ${oldId}`);
+    expect(vi.mocked(runAgent)).toHaveBeenCalledWith(
+      expect.anything(),
+      "general-purpose",
+      "add review-driven coverage",
+      expect.objectContaining({ resumeSessionFile: sessionPath() }),
+    );
+  });
+
   it("can reopen an evicted session in the foreground", async () => {
     const { tools } = boot();
     finishedRun(fakeSession());
@@ -1438,6 +1484,44 @@ describe("handles as tool arguments", () => {
     );
 
     expect(session.steer).toHaveBeenCalledWith("keep going");
+  });
+
+  it("resumes a retained agent in the foreground by its assigned name", async () => {
+    const { tools } = boot();
+    const session = fakeSession();
+    finishedRun(session);
+    vi.mocked(resumeAgent).mockResolvedValue({ text: "second answer", failure: undefined } as any);
+    await tools.get("Agent").execute(
+      "tc-named",
+      {
+        prompt: "implement checkpoint two",
+        description: "implement checkpoint two",
+        subagent_type: "general-purpose",
+        name: "checkpoint-2-implementer",
+        run_in_background: true,
+      },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    await flush();
+
+    const resumed = await tools.get("Agent").execute(
+      "tc-resume",
+      {
+        prompt: "add review-driven coverage",
+        description: "add review-driven coverage",
+        subagent_type: "general-purpose",
+        resume: "checkpoint-2-implementer",
+        run_in_background: false,
+      },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    expect(textOf(resumed)).toContain("second answer");
+    expect(resumeAgent).toHaveBeenCalledWith(session, "add review-driven coverage", expect.anything());
   });
 
   it("reads a result by handle", async () => {

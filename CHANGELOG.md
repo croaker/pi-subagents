@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **`Agent({ resume })` can reopen a persisted subagent after its live record is cleaned up.** Completed records are still disposed after roughly ten minutes so child sessions release their conversation state, extension bindings, timers, and other resources, but the Agent tool now follows the same trusted tombstone path as `@handle`: it validates the recorded session file, refuses to substitute a deleted or disabled agent type, reopens the conversation under that type's current configuration, and returns the replacement run's new ID. Retrying with the old ID follows the replacement while it remains live instead of forking the persisted conversation. In-memory-only and nested agents remain unavailable after cleanup because they have no session file to reopen.
+- **`Agent({ resume })` can reopen a persisted subagent after its live record is cleaned up.** Completed records are still disposed after roughly ten minutes so child sessions release their conversation state, extension bindings, timers, and other resources, but the Agent tool now follows the same trusted tombstone path as `@handle`: it accepts the old ID, type-derived handle, or assigned name; validates the recorded session file; refuses to substitute a deleted or disabled agent type; reopens the conversation under that type's current configuration; and returns the replacement run's new ID. Retrying with the old reference follows the replacement while it remains live instead of forking the persisted conversation. In-memory-only and nested agents remain unavailable after cleanup because they have no session file to reopen.
 
 ## [0.18.0] - 2026-08-20
 

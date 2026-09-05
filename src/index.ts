@@ -1361,7 +1361,7 @@ Notes:
 - Parallel work: one message, multiple Agent calls — they run concurrently.
 - Subagents run in the background by default; you'll be notified when one completes. Pass run_in_background: false only when your very next action depends on the result and nothing else could usefully happen while it runs. Never fabricate or predict a pending agent's results — if the user asks before the notification arrives, say it's still running.
 - The result is not shown to the user — summarize it for them. Verify an agent's claimed code changes before reporting work done.
-- resume continues a previous agent by ID; steer_subagent messages a running one.${isolationCompactGuideline}`;
+- resume continues a previous agent by ID or handle; steer_subagent messages a running one.${isolationCompactGuideline}`;
 
   const fullAgentToolDescription = `Launch a new agent to handle complex, multi-step tasks autonomously. Each agent type has specific capabilities and tools available to it.
 
@@ -1385,7 +1385,7 @@ If the target is already known, use a direct tool — \`read\` for a known path,
 - Agents run in the background by default. When an agent runs in the background, you will be automatically notified when it completes — do NOT sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.
 - **Foreground vs background**: Pass \`run_in_background: false\` only when your very next action depends on the agent's result and nothing else could usefully happen while it runs — e.g., a research agent whose finding gates the edit you're about to make. Otherwise let it run in the background (the default) — this includes fire-and-forget work, independent investigations, and anything where the user might hand you something else in the meantime. Wanting the result "next" is not enough on its own.
 - **Don't race**: after launching a background agent, you know nothing about its results. Never fabricate or predict them in any format — not as prose, summary, or structured output. The completion notification arrives in a later turn; it is never something you write yourself. If the user asks before it lands, say the agent is still running — give status, not a guess.
-- Use resume with an agent ID to continue a previous agent's work. A new (non-resume) Agent call starts a fresh agent with no memory of prior runs, so the prompt must be self-contained.
+- Use resume with an agent ID or handle to continue a previous agent's work. A new (non-resume) Agent call starts a fresh agent with no memory of prior runs, so the prompt must be self-contained.
 - Use steer_subagent to send mid-run messages to a running background agent.
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, etc.), since it is not aware of the user's intent.
 - If an agent's description says it should be used proactively, try to use it without the user having to ask for it first.
@@ -1508,7 +1508,7 @@ Terse command-style prompts produce shallow, generic work.
       ),
       resume: Type.Optional(
         Type.String({
-          description: "Optional agent ID to resume from. Continues from previous context, reopening a persisted session after its in-memory record is cleaned up when available. A reopened session receives a new agent ID. Resumes detached like any other spawn; pass run_in_background: false to block and get the result inline. An agent can only be resumed once its current run has finished — use steer_subagent to reach one mid-run.",
+          description: "Optional agent ID or handle to resume from. Continues from previous context, reopening a persisted session after its in-memory record is cleaned up when available. A reopened session receives a new agent ID. Resumes detached like any other spawn; pass run_in_background: false to block and get the result inline. An agent can only be resumed once its current run has finished — use steer_subagent to reach one mid-run.",
         }),
       ),
       isolated: Type.Optional(
@@ -1877,7 +1877,7 @@ Terse command-style prompts produce shallow, generic work.
           );
         }
 
-        const record = await manager.resume(params.resume, params.prompt, signal);
+        const record = await manager.resume(existing.id, params.prompt, signal);
         if (!record) {
           return textResult(`Failed to resume agent "${params.resume}".`);
         }
