@@ -6,6 +6,12 @@ import { ConversationViewer } from "../src/ui/conversation-viewer.js";
 import type { ViewerKeybindings } from "../src/ui/viewer-keys.js";
 import { createViewerKeys } from "../src/ui/viewer-keys.js";
 
+const KEYBINDINGS = {
+  ...TUI_KEYBINDINGS,
+  "app.tools.expand": { defaultKeys: "ctrl+o" },
+} as const;
+
+const CTRL_O = "\x0f";
 const CTRL_P = "\x10";
 const CTRL_N = "\x0e";
 const UP = "\x1b[A";
@@ -57,6 +63,27 @@ function scrollOffset(viewer: ConversationViewer): number {
 }
 
 describe("viewer-keys", () => {
+  it("uses Ctrl+O for expansion by default, with or without a manager", () => {
+    for (const keys of [createViewerKeys(), createViewerKeys(new KeybindingsManager(KEYBINDINGS))]) {
+      expect(keys.expandTools(CTRL_O)).toBe(true);
+      expect(keys.expandTools(CTRL_P)).toBe(false);
+    }
+  });
+
+  it("honors rebound expansion keys instead of the default", () => {
+    const keys = createViewerKeys(new KeybindingsManager(KEYBINDINGS, {
+      "app.tools.expand": ["ctrl+p", "ctrl+n"],
+    }));
+    expect(keys.expandTools(CTRL_O)).toBe(false);
+    expect(keys.expandTools(CTRL_P)).toBe(true);
+    expect(keys.expandTools(CTRL_N)).toBe(true);
+  });
+
+  it("does not fall back to Ctrl+O when expansion is disabled", () => {
+    const keys = createViewerKeys(new KeybindingsManager(KEYBINDINGS, { "app.tools.expand": [] }));
+    expect(keys.expandTools(CTRL_O)).toBe(false);
+  });
+
   it("honors user keybindings when a manager is provided", () => {
     const keys = createViewerKeys(createEmacsKeybindings());
     expect(keys.scrollUp(CTRL_P)).toBe(true);
@@ -106,6 +133,41 @@ describe("viewer-keys", () => {
 
 describe("ConversationViewer custom keybindings", () => {
   beforeAll(() => initTheme("dark"));
+
+  it("shows the expansion binding and current action in the footer", () => {
+    const viewer = createViewer();
+    expect(viewer.render(120).join("\n")).toContain("ctrl+o expand");
+    viewer.handleInput(CTRL_O);
+    expect(viewer.render(120).join("\n")).toContain("ctrl+o collapse");
+  });
+
+  it("shows rebound expansion keys and ignores Ctrl+O", () => {
+    const viewer = createViewer(new KeybindingsManager(KEYBINDINGS, { "app.tools.expand": "ctrl+n" }));
+    expect(viewer.render(120).join("\n")).toContain("ctrl+n expand");
+    expect(viewer.render(120).join("\n")).not.toContain("ctrl+o");
+    viewer.handleInput(CTRL_O);
+    expect(viewer.render(120).join("\n")).toContain("ctrl+n expand");
+    viewer.handleInput(CTRL_N);
+    expect(viewer.render(120).join("\n")).toContain("ctrl+n collapse");
+  });
+
+  it("omits the expansion hint when the action is disabled", () => {
+    const viewer = createViewer(new KeybindingsManager(KEYBINDINGS, { "app.tools.expand": [] }));
+    viewer.handleInput(CTRL_O);
+    expect(viewer.render(120).join("\n")).not.toContain("expand");
+    expect(viewer.render(120).join("\n")).not.toContain("collapse");
+  });
+
+  it("gives expansion priority over a colliding scroll binding", () => {
+    const viewer = createViewer(new KeybindingsManager(KEYBINDINGS, {
+      "app.tools.expand": "ctrl+p",
+      "tui.select.up": "ctrl+p",
+    }));
+    const bottom = scrollOffset(viewer);
+    viewer.handleInput(CTRL_P);
+    expect(viewer.render(120).join("\n")).toContain("ctrl+p collapse");
+    expect(scrollOffset(viewer)).toBe(bottom);
+  });
 
   it("scrolls with ctrl+p/ctrl+n when bound to tui.select.up/down", () => {
     const viewer = createViewer(createEmacsKeybindings());

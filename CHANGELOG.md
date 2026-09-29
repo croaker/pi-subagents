@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Expand tool output across the live conversation viewer.** Press `Ctrl+O` (Pi's `app.tools.expand` binding, honoring rebindings or disabling) to toggle renderer-provided details for all tool calls, including new ones, without changing the main conversation. The footer shows the current shortcut and action; expansion does not toggle while composing a steering message or recover output truncated during execution.
+
 ### Changed
 - **The live conversation viewer uses Pi's own message and tool renderers.** User and assistant messages now follow Pi's Markdown and thinking presentation, tool calls show their native argument and result previews, and assistant text and tool calls appear while they stream. The viewer remains an overlay with its own scrolling and steering controls; standalone results and shell execution entries still use its lightweight fallback.
 

@@ -185,6 +185,30 @@ describe("ConversationViewer", () => {
     expect(lines).not.toContain("[Result]");
   });
 
+  it("toggles custom tool details with Ctrl+O and requests a redraw", () => {
+    const details = { insight: "Extra tool insight" };
+    const renderResult = vi.fn((result: { details: typeof details }, options: { expanded: boolean }) =>
+      new Text(options.expanded ? result.details.insight : "Compact result", 0, 0));
+    const session = mockSession([
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "probe", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "probe", content: [{ type: "text", text: "done" }], details, isError: false },
+    ]);
+    session.getToolDefinition = () => ({ renderResult });
+    const tui = mockTui();
+    const viewer = new ConversationViewer(tui, session, mockRecord(), undefined, ansiTheme(), vi.fn());
+    expect(viewer.render(80).join("\n")).toContain("Compact result");
+    expect(viewer.render(80).join("\n")).not.toContain(details.insight);
+
+    viewer.handleInput("\x0f");
+    expect(tui.requestRender).toHaveBeenCalled();
+    expect(viewer.render(80).join("\n")).toContain(details.insight);
+    expect(renderResult.mock.lastCall?.[0].details).toBe(details);
+
+    viewer.handleInput("\x0f");
+    expect(viewer.render(80).join("\n")).toContain("Compact result");
+    expect(viewer.render(80).join("\n")).not.toContain(details.insight);
+  });
+
   it("keeps native tool components across renders", () => {
     const renderCall = vi.fn(() => new Text("tool", 0, 0));
     const session = mockSession([
@@ -210,6 +234,94 @@ describe("ConversationViewer", () => {
       content: [{ type: "text", text: "finished output" }], isError: false,
     });
     expect((viewer as any).buildContentLines(76).join("\n")).toContain("finished output");
+  });
+
+  it("keeps newly arriving tool calls and late results expanded", () => {
+    const session = mockSession();
+    session.getToolDefinition = () => ({
+      renderCall: (_args: unknown, _theme: unknown, context: { expanded: boolean }) =>
+        new Text(context.expanded ? "Expanded call" : "Compact call", 0, 0),
+      renderResult: (result: { details: { insight: string } }, options: { expanded: boolean }) =>
+        new Text(options.expanded ? result.details.insight : "Compact result", 0, 0),
+    });
+    const viewer = new ConversationViewer(mockTui(), session, mockRecord(), undefined, ansiTheme(), vi.fn());
+    viewer.render(80);
+    viewer.handleInput("\x0f");
+
+    for (const id of ["first", "second"]) {
+      session.messages.push({ role: "assistant", content: [{ type: "toolCall", id, name: "probe", arguments: {} }] });
+      expect(viewer.render(80).join("\n")).toContain("Expanded call");
+      session.messages.push({
+        role: "toolResult", toolCallId: id, toolName: "probe", isError: false,
+        content: [{ type: "text", text: "done" }], details: { insight: `${id} insight` },
+      });
+      expect(viewer.render(80).join("\n")).toContain(`${id} insight`);
+    }
+    viewer.handleInput("\x0f");
+    const collapsed = viewer.render(80).join("\n");
+    expect(collapsed).toContain("Compact call");
+    expect(collapsed).not.toContain("Expanded call");
+    expect(collapsed).not.toContain("first insight");
+    expect(collapsed).not.toContain("second insight");
+  });
+
+  it("leaves expansion keys with the steering composer", () => {
+    const session = mockSession([
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "probe", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "probe", content: [{ type: "text", text: "done" }], isError: false },
+    ]);
+    session.getToolDefinition = () => ({
+      renderResult: (_result: unknown, options: { expanded: boolean }) =>
+        new Text(options.expanded ? "Expanded result" : "Compact result", 0, 0),
+    });
+    const viewer = new ConversationViewer(
+      mockTui(), session, mockRecord(), undefined, ansiTheme(), vi.fn(), undefined, undefined, vi.fn(),
+    );
+    viewer.render(80);
+    viewer.handleInput("\r");
+    viewer.handleInput("\x0f");
+    viewer.handleInput("\x1b");
+    expect(viewer.render(80).join("\n")).toContain("Compact result");
+    viewer.handleInput("\x0f");
+    expect(viewer.render(80).join("\n")).toContain("Expanded result");
+  });
+
+  it("clamps the reading position after collapse without enabling auto-follow", () => {
+    const session = mockSession([
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "probe", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "probe", content: [{ type: "text", text: "done" }], isError: false },
+    ]);
+    session.getToolDefinition = () => ({
+      renderResult: (_result: unknown, options: { expanded: boolean }) => new Text(
+        options.expanded ? Array.from({ length: 40 }, (_, i) => `Expanded line ${i}`).join("\n") : "Compact result", 0, 0,
+      ),
+    });
+    const viewer = new ConversationViewer(mockTui(20), session, mockRecord(), undefined, ansiTheme(), vi.fn());
+    viewer.render(80);
+    viewer.handleInput("\x0f");
+    expect(viewer.render(80).join("\n")).toContain("Expanded line 39");
+    viewer.handleInput("\x1b[A"); // Stop following at the expanded bottom.
+    viewer.handleInput("\x0f");
+    expect(viewer.render(80).join("\n")).toContain("Compact result");
+    viewer.handleInput("\x0f");
+    const expandedAgain = viewer.render(80).join("\n");
+    expect(expandedAgain).toContain("Expanded line 0");
+    expect(expandedAgain).not.toContain("Expanded line 39");
+  });
+
+  it("fits expanded custom output within narrow and resized viewports", () => {
+    const session = mockSession([
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "probe", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "probe", content: [{ type: "text", text: "done" }], isError: false },
+    ]);
+    session.getToolDefinition = () => ({
+      renderResult: (_result: unknown, options: { expanded: boolean }) =>
+        new Text(options.expanded ? `\x1b[32m${"界".repeat(100)}\x1b[0m` : "Compact result", 0, 0),
+    });
+    const viewer = new ConversationViewer(mockTui(), session, mockRecord(), undefined, ansiTheme(), vi.fn());
+    viewer.render(80);
+    viewer.handleInput("\x0f");
+    for (const width of [8, 40, 80, 120]) assertAllLinesFit(viewer.render(width), width);
   });
 
   describe("render width safety", () => {

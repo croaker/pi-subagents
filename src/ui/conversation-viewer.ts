@@ -25,6 +25,7 @@ export const VIEWPORT_HEIGHT_PCT = 70;
 export class ConversationViewer implements Component {
   private scrollOffset = 0;
   private autoScroll = true;
+  private toolsExpanded = false;
   private unsubscribe: (() => void) | undefined;
   private streamingMessage: AssistantMessage | undefined;
   private toolComponents = new Map<string, {
@@ -112,6 +113,14 @@ export class ConversationViewer implements Component {
     }
     if (this.stopArmed) this.stopArmed = false;
 
+    // Close, steer, and stop keep priority; expansion wins over scroll bindings.
+    if (this.keys.expandTools(data)) {
+      this.toolsExpanded = !this.toolsExpanded;
+      for (const { component } of this.toolComponents.values()) component.setExpanded(this.toolsExpanded);
+      this.tui.requestRender();
+      return;
+    }
+
     const totalLines = this.buildContentLines(this.lastInnerW).length;
     const viewportHeight = this.viewportHeight();
     const maxScroll = Math.max(0, totalLines - viewportHeight);
@@ -193,11 +202,9 @@ export class ConversationViewer implements Component {
     const viewportHeight = this.viewportHeight();
     const maxScroll = Math.max(0, contentLines.length - viewportHeight);
 
-    if (this.autoScroll) {
-      this.scrollOffset = maxScroll;
-    }
+    this.scrollOffset = this.autoScroll ? maxScroll : Math.min(this.scrollOffset, maxScroll);
 
-    const visibleStart = Math.min(this.scrollOffset, maxScroll);
+    const visibleStart = this.scrollOffset;
     const visible = contentLines.slice(visibleStart, visibleStart + viewportHeight);
 
     for (let i = 0; i < viewportHeight; i++) {
@@ -219,6 +226,9 @@ export class ConversationViewer implements Component {
       // the right group so "Esc close" is the only part that truncates first.
       const sep = th.fg("dim", " · ");
       const actions: string[] = [];
+      if (this.keys.expandToolsHint) {
+        actions.push(th.fg("dim", `${this.keys.expandToolsHint} ${this.toolsExpanded ? "collapse" : "expand"}`));
+      }
       if (this.canSteer()) actions.push(th.fg("dim", "Enter steer"));
       if (this.isStoppable()) {
         actions.push(this.stopArmed ? th.fg("error", "x again to STOP") : th.fg("dim", "x stop"));
@@ -336,6 +346,7 @@ export class ConversationViewer implements Component {
           ),
           args: call.arguments,
         };
+        if (this.toolsExpanded) cached.component.setExpanded(true);
         this.toolComponents.set(call.id, cached);
       } else if (streaming || cached.args !== call.arguments) {
         cached.component.updateArgs(call.arguments);
