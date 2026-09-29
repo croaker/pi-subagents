@@ -5,7 +5,8 @@
  * Subscribes to session events for real-time streaming updates.
  */
 
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
+import { type AgentSession, AssistantMessageComponent, getMarkdownTheme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import { type Component, Input, matchesKey, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { renderAgentName } from "../agent-color.js";
 import { extractText } from "../context.js";
@@ -25,6 +26,12 @@ export class ConversationViewer implements Component {
   private scrollOffset = 0;
   private autoScroll = true;
   private unsubscribe: (() => void) | undefined;
+  private streamingMessage: AssistantMessage | undefined;
+  private toolComponents = new Map<string, {
+    component: ToolExecutionComponent;
+    args: unknown;
+    result?: Extract<AgentSession["messages"][number], { role: "toolResult" }>;
+  }>();
   private lastInnerW = 0;
   private closed = false;
   /** Two-press confirm guard for the stop key, so a stray key can't kill the agent. */
@@ -54,8 +61,13 @@ export class ConversationViewer implements Component {
     private showCost = false,
   ) {
     this.keys = createViewerKeys(keybindings);
-    this.unsubscribe = session.subscribe(() => {
+    this.unsubscribe = session.subscribe((event) => {
       if (this.closed) return;
+      if (event.type === "message_update" && event.message.role === "assistant") {
+        this.streamingMessage = event.message;
+      } else if (event.type === "message_end" && event.message.role === "assistant") {
+        this.streamingMessage = undefined;
+      }
       this.tui.requestRender();
     });
   }
@@ -260,10 +272,13 @@ export class ConversationViewer implements Component {
     this.tui.requestRender();
   }
 
-  invalidate(): void { /* no cached state to clear */ }
+  invalidate(): void {
+    for (const { component } of this.toolComponents.values()) component.invalidate();
+  }
 
   dispose(): void {
     this.closed = true;
+    this.toolComponents.clear();
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = undefined;
@@ -298,54 +313,64 @@ export class ConversationViewer implements Component {
     const messages = this.session.messages;
     const lines: string[] = [];
 
-    if (messages.length === 0) {
+    if (messages.length === 0 && !this.streamingMessage) {
       lines.push(th.fg("dim", "(waiting for first message...)"));
       return lines;
     }
 
-    let needsSeparator = false;
+    const markdownTheme = getMarkdownTheme();
+    const results = new Map(messages.filter(m => m.role === "toolResult").map(m => [m.toolCallId, m]));
+    const renderedResults = new Set<string>();
+    const renderToolCall = (call: ToolCall, streaming = false) => {
+      const result = results.get(call.id);
+      let cached = this.toolComponents.get(call.id);
+      if (cached?.result && !result) {
+        this.toolComponents.delete(call.id);
+        cached = undefined;
+      }
+      if (!cached) {
+        cached = {
+          component: new ToolExecutionComponent(
+            call.name, call.id, call.arguments, {}, this.session.getToolDefinition?.(call.name),
+            this.tui, this.session.sessionManager?.getCwd?.() ?? process.cwd(),
+          ),
+          args: call.arguments,
+        };
+        this.toolComponents.set(call.id, cached);
+      } else if (streaming || cached.args !== call.arguments) {
+        cached.component.updateArgs(call.arguments);
+        cached.args = call.arguments;
+      }
+      if (result && cached.result !== result) {
+        cached.component.updateResult(result);
+        cached.result = result;
+      }
+      if (result) renderedResults.add(call.id);
+      lines.push(...cached.component.render(width));
+    };
     for (const msg of messages) {
       if (msg.role === "user") {
         const text = typeof msg.content === "string"
           ? msg.content
           : extractText(msg.content);
         if (!text.trim()) continue;
-        if (needsSeparator) lines.push(th.fg("dim", "───"));
-        lines.push(th.fg("accent", "[User]"));
-        for (const line of wrapTextWithAnsi(text.trim(), width)) {
-          lines.push(line);
-        }
+        lines.push(...new UserMessageComponent(text, markdownTheme, 0).render(width));
       } else if (msg.role === "assistant") {
-        const textParts: string[] = [];
-        const toolCalls: string[] = [];
-        for (const c of msg.content) {
-          if (c.type === "text" && c.text) textParts.push(c.text);
-          else if (c.type === "toolCall") {
-            toolCalls.push((c as any).name ?? (c as any).toolName ?? "unknown");
-          }
-        }
-        if (needsSeparator) lines.push(th.fg("dim", "───"));
-        lines.push(th.bold("[Assistant]"));
-        if (textParts.length > 0) {
-          for (const line of wrapTextWithAnsi(textParts.join("\n").trim(), width)) {
-            lines.push(line);
-          }
-        }
-        for (const name of toolCalls) {
-          lines.push(truncateToWidth(th.fg("muted", `  [Tool: ${name}]`), width));
+        lines.push(...new AssistantMessageComponent(msg, false, markdownTheme, "Thinking...", 0).render(width));
+        for (const call of msg.content) {
+          if (call.type === "toolCall") renderToolCall(call);
         }
       } else if (msg.role === "toolResult") {
+        if (renderedResults.has(msg.toolCallId)) continue;
+        // A standalone result can occur when history was trimmed or imported.
         const text = extractText(msg.content);
         const truncated = text.length > 500 ? text.slice(0, 500) + "... (truncated)" : text;
         if (!truncated.trim()) continue;
-        if (needsSeparator) lines.push(th.fg("dim", "───"));
-        lines.push(th.fg("dim", "[Result]"));
         for (const line of wrapTextWithAnsi(truncated.trim(), width)) {
           lines.push(th.fg("dim", line));
         }
       } else if ((msg as any).role === "bashExecution") {
         const bash = msg as any;
-        if (needsSeparator) lines.push(th.fg("dim", "───"));
         lines.push(truncateToWidth(th.fg("muted", `  $ ${bash.command}`), width));
         if (bash.output?.trim()) {
           const out = bash.output.length > 500
@@ -355,10 +380,14 @@ export class ConversationViewer implements Component {
             lines.push(th.fg("dim", line));
           }
         }
-      } else {
-        continue;
       }
-      needsSeparator = true;
+    }
+
+    if (this.streamingMessage && !messages.includes(this.streamingMessage)) {
+      lines.push(...new AssistantMessageComponent(this.streamingMessage, false, markdownTheme, "Thinking...", 0).render(width));
+      for (const call of this.streamingMessage.content) {
+        if (call.type === "toolCall") renderToolCall(call, true);
+      }
     }
 
     // Streaming indicator for running agents

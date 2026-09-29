@@ -1,5 +1,6 @@
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentRecord } from "../src/types.js";
 import { ConversationViewer } from "../src/ui/conversation-viewer.js";
 import type { ViewerKeybindings } from "../src/ui/viewer-keys.js";
@@ -104,6 +105,8 @@ describe("viewer-keys", () => {
 });
 
 describe("ConversationViewer custom keybindings", () => {
+  beforeAll(() => initTheme("dark"));
+
   it("scrolls with ctrl+p/ctrl+n when bound to tui.select.up/down", () => {
     const viewer = createViewer(createEmacsKeybindings());
     const bottom = scrollOffset(viewer);

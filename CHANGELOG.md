@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The live conversation viewer uses Pi's own message and tool renderers.** User and assistant messages now follow Pi's Markdown and thinking presentation, tool calls show their native argument and result previews, and assistant text and tool calls appear while they stream. The viewer remains an overlay with its own scrolling and steering controls; standalone results and shell execution entries still use its lightweight fallback.
+
 ### Fixed
 - **Context-aware `@handle` starts see the parent's conversation on newer Pi.** Pi 0.87+ takes model context from the session manager, so writing only to the clone's agent state left its off-screen turn without the copied history. The clone now appends the parent's projected, model-visible messages to its own in-memory session, including compaction summaries and context edits where supported; it still uses Pi's one-tool prompt for the off-screen turn.
 - **`Agent({ resume })` can reopen a persisted subagent after its live record is cleaned up.** Completed records are still disposed after roughly ten minutes so child sessions release their conversation state, extension bindings, timers, and other resources, but the Agent tool now follows the same trusted tombstone path as `@handle`: it accepts the old ID, type-derived handle, or assigned name; validates the recorded session file; refuses to substitute a deleted or disabled agent type; reopens the conversation under that type's current configuration; and returns the replacement run's new ID. Retrying with the old reference follows the replacement while it remains live instead of forking the persisted conversation. In-memory-only and nested agents remain unavailable after cleanup because they have no session file to reopen.

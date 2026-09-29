@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRecord } from "../src/types.js";
 
 // ── Mock wrapTextWithAnsi ──────────────────────────────────────────────
@@ -22,7 +23,7 @@ vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
 
 // Must import AFTER vi.mock declaration (vitest hoists vi.mock but the
 // dynamic import of the test subject must happen after)
-const { visibleWidth } = await import("@earendil-works/pi-tui");
+const { Text, visibleWidth } = await import("@earendil-works/pi-tui");
 const { ConversationViewer } = await import("../src/ui/conversation-viewer.js");
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -71,6 +72,7 @@ function assertAllLinesFit(lines: string[], width: number) {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+beforeAll(() => initTheme("dark"));
 beforeEach(() => {
   wrapOverride = null;
 });
@@ -109,6 +111,107 @@ describe("ConversationViewer cost display", () => {
 });
 
 describe("ConversationViewer", () => {
+  it("uses Pi's message presentation instead of role labels and raw Markdown", () => {
+    const viewer = new ConversationViewer(
+      mockTui(), mockSession([
+        { role: "user", content: "**Important** question" },
+        { role: "assistant", content: [{ type: "text", text: "# Answer" }] },
+      ]), mockRecord({ status: "completed" }), undefined, ansiTheme(), vi.fn(),
+    );
+    const lines = (viewer as any).buildContentLines(76).join("\n");
+    expect(lines).not.toContain("[User]");
+    expect(lines).not.toContain("[Assistant]");
+    expect(lines).not.toContain("**Important**");
+    expect(lines).not.toContain("# Answer");
+    expect(lines).toContain("Important");
+    expect(lines).toContain("Answer");
+  });
+
+  it("shows thinking blocks through Pi's assistant renderer", () => {
+    const viewer = new ConversationViewer(
+      mockTui(), mockSession([{ role: "assistant", content: [{ type: "thinking", thinking: "Checking the constraints" }] }]),
+      mockRecord({ status: "completed" }), undefined, ansiTheme(), vi.fn(),
+    );
+    expect((viewer as any).buildContentLines(76).join("\n")).toContain("Checking the constraints");
+  });
+
+  it("renders the assistant's partial message during streaming", () => {
+    type MessageEvent = { type: "message_update" | "message_end"; message: { role: "assistant"; content?: Array<{ type: "text"; text: string }> } };
+    let onEvent: (event: MessageEvent) => void = () => {};
+    const session = mockSession([{ role: "user", content: "Question" }]);
+    session.subscribe = vi.fn((listener: (event: MessageEvent) => void) => {
+      onEvent = listener;
+      return vi.fn();
+    });
+    const viewer = new ConversationViewer(
+      mockTui(), session, mockRecord(), undefined, ansiTheme(), vi.fn(),
+    );
+    onEvent({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "**Working** now" }] } });
+    const lines = (viewer as any).buildContentLines(76).join("\n");
+    expect(lines).toContain("Working");
+    expect(lines).not.toContain("**Working**");
+    onEvent({ type: "message_end", message: { role: "assistant" } });
+    expect((viewer as any).buildContentLines(76).join("\n")).not.toContain("Working");
+  });
+
+  it("shows a partial response before the first finalized message", () => {
+    let onEvent: (event: { type: "message_update"; message: { role: "assistant"; content: Array<{ type: "text"; text: string }> } }) => void = () => {};
+    const session = mockSession([]);
+    session.subscribe = vi.fn((listener: typeof onEvent) => { onEvent = listener; return vi.fn(); });
+    const viewer = new ConversationViewer(mockTui(), session, mockRecord(), undefined, ansiTheme(), vi.fn());
+    onEvent({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "First response" }] } });
+    expect((viewer as any).buildContentLines(76).join("\n")).toContain("First response");
+  });
+
+  it("shows a tool call as its arguments stream in", () => {
+    let onEvent: (event: { type: "message_update"; message: { role: "assistant"; content: Array<{ type: "toolCall"; id: string; name: string; arguments: { path: string } }> } }) => void = () => {};
+    const session = mockSession([]);
+    session.subscribe = vi.fn((listener: typeof onEvent) => { onEvent = listener; return vi.fn(); });
+    const viewer = new ConversationViewer(mockTui(), session, mockRecord(), undefined, ansiTheme(), vi.fn());
+    onEvent({ type: "message_update", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/stream.ts" } }] } });
+    expect((viewer as any).buildContentLines(76).join("\n")).toContain("src/stream.ts");
+  });
+
+  it("shows tool calls and results using Pi's tool presentation", () => {
+    const viewer = new ConversationViewer(
+      mockTui(), mockSession([
+        { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/example.ts" } }] },
+        { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{ type: "text", text: "hello from file" }], isError: false },
+      ]), mockRecord({ status: "completed" }), undefined, ansiTheme(), vi.fn(),
+    );
+    const lines = (viewer as any).buildContentLines(76).join("\n");
+    expect(lines).toContain("src/example.ts");
+    expect(lines).not.toContain("[Tool: read]");
+    expect(lines).not.toContain("[Result]");
+  });
+
+  it("keeps native tool components across renders", () => {
+    const renderCall = vi.fn(() => new Text("tool", 0, 0));
+    const session = mockSession([
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "probe", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-1", toolName: "probe", content: [{ type: "text", text: "done" }], isError: false },
+    ]);
+    session.getToolDefinition = () => ({ renderCall });
+    const viewer = new ConversationViewer(mockTui(), session, mockRecord(), undefined, ansiTheme(), vi.fn());
+    (viewer as any).buildContentLines(76);
+    const initialCalls = renderCall.mock.calls.length;
+    (viewer as any).buildContentLines(76);
+    expect(renderCall).toHaveBeenCalledTimes(initialCalls);
+  });
+
+  it("updates a cached tool when its result arrives", () => {
+    const session = mockSession([
+      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "probe", arguments: {} }] },
+    ]);
+    const viewer = new ConversationViewer(mockTui(), session, mockRecord(), undefined, ansiTheme(), vi.fn());
+    expect((viewer as any).buildContentLines(76).join("\n")).not.toContain("finished output");
+    session.messages.push({
+      role: "toolResult", toolCallId: "call-1", toolName: "probe",
+      content: [{ type: "text", text: "finished output" }], isError: false,
+    });
+    expect((viewer as any).buildContentLines(76).join("\n")).toContain("finished output");
+  });
+
   describe("render width safety", () => {
     const widths = [40, 80, 120, 216];
 
