@@ -13,6 +13,7 @@
  * because the caller starts the agent directly on `spawned: false` and a
  * rejection would instead lose the mention entirely.
  */
+import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted: vi.mock's factory is lifted above the imports, so it cannot close
@@ -29,7 +30,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
     ...actual,
     buildSessionContext,
     createAgentSession,
-    SessionManager: { ...actual.SessionManager, inMemory },
+    SessionManager: { ...actual.SessionManager, inMemory: inMemory.mockImplementation((cwd) => actual.SessionManager.inMemory(cwd)) },
   };
 });
 
@@ -44,8 +45,7 @@ const CONVERSATION = [
 
 beforeEach(() => {
   createAgentSession.mockReset();
-  inMemory.mockReset();
-  inMemory.mockReturnValue({ kind: "in-memory-session-manager" } as any);
+  inMemory.mockClear();
   buildSessionContext.mockReset();
   buildSessionContext.mockReturnValue({ messages: CONVERSATION, thinkingLevel: "high", model: null } as any);
 });
@@ -97,7 +97,7 @@ function visibleTools(opts: any): any[] {
  * the tools Pi would really expose reach it, so a clone built with an allowlist
  * that hides its own tool prompts a model with nothing to call.
  */
-function cloneSession(turn?: (tool: any) => Promise<void> | void) {
+function cloneSession(turn?: (tool: any, options: any) => Promise<void> | void) {
   const session = {
     agent: { state: { systemPrompt: "rebuilt-from-cwd", messages: [] as any[] } },
     prompt: vi.fn(async () => {}),
@@ -108,7 +108,7 @@ function cloneSession(turn?: (tool: any) => Promise<void> | void) {
     session.prompt.mockImplementation(async () => {
       // No tool, no tool call: the model can only answer in prose.
       if (tools.length === 0) return;
-      await turn?.(tools[0]);
+      await turn?.(tools[0], opts);
     });
     session.createdWith = opts;
     return { session };
@@ -131,16 +131,36 @@ const opts = (over: Record<string, unknown> = {}) => ({
 }) as any;
 
 describe("cloning the conversation", () => {
-  it("carries the conversation's own messages, not a rendering of them", async () => {
-    // The whole point: the copy reasons over what the main model can see.
-    const session = cloneSession(callsAgent());
+  it("feeds the canonical session manager before the model turn", async () => {
+    cloneSession(async (tool, options) => {
+      expect(options.sessionManager.buildSessionContext().messages).toEqual(CONVERSATION);
+      await callsAgent()(tool);
+    });
 
-    await runMentionClone(opts());
+    expect(await runMentionClone(opts())).toEqual({ spawned: true });
+  });
 
-    expect(session.agent.state.messages).toEqual([
-      { role: "user", content: [{ type: "text", text: "hi" }] },
-      { role: "assistant", content: [{ type: "text", text: "hello" }] },
-    ]);
+  it("projects compacted and edited context instead of the unedited session path", async () => {
+    const pi = await vi.importActual<typeof piCodingAgent>(
+      "@earendil-works/pi-coding-agent",
+    );
+    const main = pi.SessionManager.inMemory("/repo");
+    main.appendMessage({ role: "user", content: "old history", timestamp: 1 });
+    const kept = main.appendMessage({ role: "user", content: "retained", timestamp: 2 });
+    main.appendCompaction("older turns", kept, 50);
+    const projected = pi.buildSessionContext(main.getEntries(), main.getLeafId()).messages;
+    const edited = [{ role: "user" as const, content: "edited retained", timestamp: 3 }];
+    const projectedManager = Object.assign(main, {
+      buildSessionProjection: vi.fn(() => ({ messages: [...projected.slice(0, 1), ...edited] })),
+    });
+    cloneSession(async (tool, options) => {
+      const messages = options.sessionManager.buildSessionContext().messages;
+      expect(pi.convertToLlm(messages)).toEqual(pi.convertToLlm([...projected.slice(0, 1), ...edited]));
+      await callsAgent()(tool);
+    });
+
+    expect(await runMentionClone(opts({ ctx: mainCtx({ sessionManager: projectedManager }) }))).toEqual({ spawned: true });
+    expect(projectedManager.buildSessionProjection).toHaveBeenCalled();
   });
 
   it("takes the conversation from memory, never from the session file", async () => {
@@ -153,9 +173,7 @@ describe("cloning the conversation", () => {
     await runMentionClone(o);
 
     expect(buildSessionContext).toHaveBeenCalledWith([{ type: "message" }], "leaf-1");
-    expect(createAgentSession.mock.calls[0][0].sessionManager).toEqual({
-      kind: "in-memory-session-manager",
-    });
+    expect(createAgentSession.mock.calls[0][0].sessionManager.isPersisted()).toBe(false);
   });
 
   it("thinks at the level the session is really on", async () => {
@@ -184,7 +202,7 @@ describe("cloning the conversation", () => {
   it("clones a conversation that has not started yet", async () => {
     // First input of a fresh session. There is no history to carry, which is an
     // answer and not a failure — the copy still runs on the main model and
-    // system prompt, and still makes the call.
+    // still makes the call.
     buildSessionContext.mockReturnValue({ messages: [], thinkingLevel: "medium", model: null } as any);
     const o = opts();
     const session = cloneSession(callsAgent());
@@ -193,17 +211,6 @@ describe("cloning the conversation", () => {
 
     expect(result).toEqual({ spawned: true });
     expect(session.agent.state.messages).toEqual([]);
-    expect(session.agent.state.systemPrompt).toBe("the live system prompt");
-  });
-
-  it("carries the live system prompt rather than the one it rebuilt", async () => {
-    // createAgentSession derives a prompt from cwd and agentDir. Close, but not
-    // what the user's model is working under — extensions add to it per turn.
-    const session = cloneSession(callsAgent());
-
-    await runMentionClone(opts());
-
-    expect(session.agent.state.systemPrompt).toBe("the live system prompt");
   });
 
   it("inherits the parent's model, thinking level and providers", async () => {

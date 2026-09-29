@@ -10,26 +10,20 @@
  * already made when they typed the handle.
  *
  * So the turn happens somewhere else. The conversation is cloned into a
- * throwaway in-memory session — same messages, same system prompt, same model —
- * and that copy takes the turn off-screen. A literal clone: the session's own
- * entries, projected by pi's own `sessionEntryToContextMessages`, not
- * `inherit_context`'s text rendering of them.
+ * throwaway in-memory session — the parent's provider-visible conversation and
+ * model — and that copy takes the turn off-screen. Pi may rebuild its one-tool
+ * system prompt on the turn, so live additions to the parent's prompt are not
+ * guaranteed to carry over.
  *
  * Cloned from memory rather than from the session file, which cannot be relied
  * on: `SessionManager._persist` withholds every write until the first assistant
  * message lands, so a fork taken before then reads an empty file and throws.
- * `buildSessionContext()` has no such timing, and is compaction-aware — it walks
- * the leaf path and substitutes the summary for entries folded into it, so a
- * long conversation clones as what the main model is actually working from. A
- * conversation with nothing in it yet clones to nothing in it yet, which is the
- * correct answer rather than a failure.
- *
- * It is also the oldest of the equivalent Pi APIs — `buildContextEntries` on
- * ReadonlySessionManager and the `sessionEntryToContextMessages` export both
- * arrived in 0.80.5 — where this one has been exported unchanged from before
- * the declared peer floor, and is the same code path (`byId` is only an index
- * cache, so passing it or not cannot change the result). Keeping the floor
- * honest costs nothing here: see the `compat-floor-pi` job.
+ * On newer Pi, `buildSessionProjection()` also applies context edits; older Pi
+ * falls back to compaction-aware `buildSessionContext()`. Convert the projected
+ * messages to provider-visible messages and append them to the clone's canonical
+ * SessionManager before creating the session. This preserves the conversation's
+ * content, not the original session-entry metadata. An empty conversation
+ * stays empty.
  *
  * Its `thinkingLevel` is NOT used, and is the one place the newer API would be
  * better. `getSessionContextSettings` starts at "off" and moves only on an
@@ -64,6 +58,7 @@
 import type { Model } from "@earendil-works/pi-ai";
 import {
   buildSessionContext,
+  convertToLlm,
   createAgentSession,
   type ExtensionContext,
   SessionManager,
@@ -75,7 +70,7 @@ import type { SubagentType, ThinkingLevel } from "./types.js";
 
 export interface MentionCloneOptions {
   /** The MAIN session's context — what the spawn is attributed to, and the
-   * source of both the conversation and the live system prompt. */
+   * source of the projected conversation. */
   ctx: ExtensionContext;
   /** Agent type the handle resolved to. */
   type: SubagentType;
@@ -136,12 +131,19 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
     // agent-runner.ts carries the same shim for the same reason — pass both so
     // the clone keeps the parent's providers across the supported range.
     const parentModelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
-    // The conversation as the main session resolves it: compaction applied,
-    // branch summaries substituted.
-    const conversation = buildSessionContext(
+    // Projection includes context edits on newer Pi. The older API still
+    // resolves compactions and branch summaries from the active leaf.
+    const parentSessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
+      buildSessionProjection?: () => Pick<ReturnType<typeof buildSessionContext>, "messages">;
+    };
+    const conversation = parentSessionManager.buildSessionProjection?.() ?? buildSessionContext(
       ctx.sessionManager.getEntries(),
       ctx.sessionManager.getLeafId(),
     );
+    const cloneManager = SessionManager.inMemory(ctx.cwd);
+    for (const projectedMessage of convertToLlm(conversation.messages)) {
+      cloneManager.appendMessage(projectedMessage);
+    }
     // Pi 0.82.0 added this; below it the field is absent and the clone takes
     // the settings level instead, which is what a session that never ran
     // `/think` is on anyway. Same shim shape as `modelRuntime` below.
@@ -151,7 +153,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
         cwd: ctx.cwd,
         // Nothing about the copy is worth persisting, and an in-memory manager
         // is also what keeps the real session untouched.
-        sessionManager: SessionManager.inMemory(ctx.cwd),
+        sessionManager: cloneManager,
         model: ctx.model as Model<never> | undefined,
         ...(thinkingLevel && { thinkingLevel }),
         modelRegistry: ctx.modelRegistry,
@@ -170,16 +172,10 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
     );
     session = created.session;
 
-    // The clone rebuilds a system prompt from cwd and agentDir, which is close
-    // but not the live one — extensions contribute to it per turn. Copy the
-    // real thing, so the copy reasons under the instructions the user's model
-    // is actually working under.
+    // Preserve the parent's live prompt where Pi retains the session state.
+    // Pi versions that rebuild it during prompt() use the clone's one-tool prompt instead.
     const systemPrompt = ctx.getSystemPrompt?.();
     if (systemPrompt) session.agent.state.systemPrompt = systemPrompt;
-
-    // The conversation itself. Pushed rather than assigned so the array the
-    // session was built around stays the one it goes on using.
-    session.agent.state.messages.push(...conversation.messages);
 
     // User text first, reminder after — the order Claude Code's attachment
     // renderer produces, where the reminder trails the message it is about.
